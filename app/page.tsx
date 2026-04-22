@@ -10,7 +10,7 @@ const PROJECT_BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH || "";
 
 const TEMP_MIN = 74;
 const TEMP_MAX = 86;
-const MIN_SECONDS_BETWEEN_PRESSES = 5;
+const MIN_SECONDS_BETWEEN_PRESSES = 4;
 const PRESS_SIGNAL_THRESHOLD = 0;
 
 const PRESSURE_MIN = -5;
@@ -1608,7 +1608,7 @@ export default function HomePage() {
   const hasValidPatientWeight = normalizedPatientWeightKg !== null;
   const expectedTidalMinMl = hasValidPatientWeight ? normalizedPatientWeightKg * 6 : null;
   const expectedTidalMaxMl = hasValidPatientWeight ? normalizedPatientWeightKg * 8 : null;
-  const statusTempMin = 78;
+  const statusTempMin = 75;
   const statusTempMax = 85;
   const statusTidalMinML = expectedTidalMinMl ?? 500;
   const statusTidalMaxML = expectedTidalMaxMl ?? 600;

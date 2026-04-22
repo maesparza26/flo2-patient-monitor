@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 const SERVICE_UUID = "c64ccea3-eae9-43bf-86cd-7d5d0b7372e4";
 const SENSOR_CHAR_UUID = "8d9b0b2d-1c57-4b8c-9a72-4d6c5d8e9011";
 const MAX_POINTS = 100;
+const PROJECT_BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH || "";
 
 const TEMP_MIN = 74;
 const TEMP_MAX = 86;
@@ -136,6 +137,18 @@ function readNumericMetric(
 
 const LOG_STORAGE_KEY = "flo2_logged_sessions";
 const THEME_STORAGE_KEY = "flo2_theme_mode";
+const DEMO_AUTH_STORAGE_KEY = "flo2_demo_auth_session";
+const DEMO_AUTH_USERNAME = "clinician";
+const DEMO_AUTH_PASSWORD = "flo2-demo";
+
+type DemoAuthSession = {
+  username: string;
+  signedInAt: number;
+};
+
+function getAssetPath(path: string) {
+  return `${PROJECT_BASE_PATH}${path}`;
+}
 
 function formatLogId(date = new Date()) {
   const pad = (value: number) => value.toString().padStart(2, "0");
@@ -1668,8 +1681,12 @@ export default function HomePage() {
       return;
     }
 
-    const soundLabel =
-      isRecoveryTransition ? "Recovery" : patientStatus.label;
+    const soundLabel: "Caution" | "Alert" | "Recovery" =
+      isRecoveryTransition
+        ? "Recovery"
+        : patientStatus.label === "Alert"
+          ? "Alert"
+          : "Caution";
 
     const AudioContextCtor =
       window.AudioContext ||
@@ -1800,14 +1817,7 @@ export default function HomePage() {
   })();
   const performSignOut = async (reason?: string) => {
     setIsAuthLoading(true);
-
-    try {
-      await fetch("/api/auth/logout", {
-        method: "POST",
-      });
-    } catch (error) {
-      console.error("Sign out failed:", error);
-    }
+    window.localStorage.removeItem(DEMO_AUTH_STORAGE_KEY);
 
     setIsSignedIn(false);
     setSignedInUser("");
@@ -1866,23 +1876,21 @@ export default function HomePage() {
   useEffect(() => {
     const loadSession = async () => {
       try {
-        const response = await fetch("/api/auth/session", {
-          method: "GET",
-          cache: "no-store",
-        });
-        const data = (await response.json()) as {
-          authenticated: boolean;
-          username?: string;
-        };
+        const rawSession = window.localStorage.getItem(DEMO_AUTH_STORAGE_KEY);
+        if (!rawSession) {
+          return;
+        }
 
-        if (data.authenticated && data.username) {
+        const data = JSON.parse(rawSession) as DemoAuthSession;
+        if (data.username) {
           setIsSignedIn(true);
-          setSignedInUser(data.username);
-          setUsername(data.username);
+          setSignedInUser(data.username.trim());
+          setUsername(data.username.trim());
           setAuthNotice("");
         }
       } catch (error) {
         console.error("Session lookup failed:", error);
+        window.localStorage.removeItem(DEMO_AUTH_STORAGE_KEY);
       } finally {
         setIsSessionLoading(false);
       }
@@ -1933,37 +1941,29 @@ export default function HomePage() {
     setAuthNotice("");
 
     try {
-      const response = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          username: normalizedUser,
-          password,
-        }),
-      });
-
-      const data = (await response.json()) as {
-        ok?: boolean;
-        username?: string;
-        error?: string;
-      };
-
-      if (!response.ok || !data.ok || !data.username) {
-        setAuthError(data.error || "Unable to sign in.");
+      if (
+        normalizedUser !== DEMO_AUTH_USERNAME ||
+        password !== DEMO_AUTH_PASSWORD
+      ) {
+        setAuthError("Invalid username or password.");
         return;
       }
 
+      const session: DemoAuthSession = {
+        username: normalizedUser,
+        signedInAt: Date.now(),
+      };
+      window.localStorage.setItem(DEMO_AUTH_STORAGE_KEY, JSON.stringify(session));
+
       setIsSignedIn(true);
-      setSignedInUser(data.username);
-      setUsername(data.username);
+      setSignedInUser(normalizedUser);
+      setUsername(normalizedUser);
       setPassword("");
       setAuthNotice("");
       setActiveTab("patientlogs");
     } catch (error) {
       console.error("Sign in failed:", error);
-      setAuthError("Unable to reach the authentication service.");
+      setAuthError("Unable to save the local session.");
     } finally {
       setIsAuthLoading(false);
     }
@@ -3334,7 +3334,7 @@ export default function HomePage() {
             >
               <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
                 <Image
-                  src="/flo2_logo.png"
+                  src={getAssetPath("/flo2_logo.png")}
                   alt="FLO2 Logo"
                   width={48}
                   height={48}
@@ -3544,7 +3544,7 @@ export default function HomePage() {
                     }}
                   >
                     <Image
-                      src="/flo2_logo.png"
+                      src={getAssetPath("/flo2_logo.png")}
                       alt="FLO2 Logo"
                       width={78}
                       height={78}

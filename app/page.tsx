@@ -7,16 +7,18 @@ const SERVICE_UUID = "c64ccea3-eae9-43bf-86cd-7d5d0b7372e4";
 const SENSOR_CHAR_UUID = "8d9b0b2d-1c57-4b8c-9a72-4d6c5d8e9011";
 const MAX_POINTS = 100;
 
-const TEMP_MIN = 70;
+const TEMP_MIN = 74;
 const TEMP_MAX = 86;
+const MIN_SECONDS_BETWEEN_PRESSES = 5;
+const PRESS_SIGNAL_THRESHOLD = 0;
 
 const PRESSURE_MIN = -5;
 const PRESSURE_MAX = 25;
 const PRESSURE_FALLBACK = 0;
 const PRESSURE_UNIT = "cm H2O";
 
-const VOLUME_MIN = -800;
-const VOLUME_MAX = 800;
+const VOLUME_MIN = 0;
+const VOLUME_MAX = 700;
 const VOLUME_FALLBACK = 0;
 
 type SensorPoint = {
@@ -491,7 +493,8 @@ function getPatientStatus(
   tempMax: number,
   tidalMinML: number,
   tidalMaxML: number,
-  isStreaming: boolean
+  isStreaming: boolean,
+  pressTooFastDetail: string | null
 ) {
   if (!latestPoint) {
     return {
@@ -522,6 +525,11 @@ function getPatientStatus(
     issues.push("Peak Tidal Volume Above Range");
   }
 
+  const hasFastPressIssue = Boolean(pressTooFastDetail);
+  if (pressTooFastDetail) {
+    issues.push(pressTooFastDetail);
+  }
+
   if (issues.length === 0) {
     return {
       label: "Stable",
@@ -532,7 +540,7 @@ function getPatientStatus(
     };
   }
 
-  if (issues.length === 1) {
+  if (issues.length === 1 && !hasFastPressIssue) {
     return {
       label: "Caution",
       tone: "#9a3412",
@@ -802,6 +810,7 @@ function GraphCard({
   height = 320,
   maxPoints,
   summaryMode = "current",
+  summaryValueOverride,
 }: {
   title: string;
   values: number[];
@@ -815,6 +824,7 @@ function GraphCard({
   height?: number;
   maxPoints?: number;
   summaryMode?: "current" | "average";
+  summaryValueOverride?: string;
 }) {
   const margin = {
     top: 20,
@@ -843,7 +853,8 @@ function GraphCard({
   const currentValue =
     plottedValues.length > 0 ? plottedValues[plottedValues.length - 1].toFixed(2) : "--";
   const summaryLabel = summaryMode === "average" ? "Average" : "Current";
-  const summaryValue = summaryMode === "average" ? averageValue : currentValue;
+  const summaryValue =
+    summaryValueOverride ?? (summaryMode === "average" ? averageValue : currentValue);
 
   const points = useMemo(() => {
     if (plottedValues.length === 0) return "";
@@ -1093,12 +1104,17 @@ export default function HomePage() {
   const [deviceName, setDeviceName] = useState("Not connected");
   const [pressure, setPressure] = useState("--");
   const [audioAlertsEnabled, setAudioAlertsEnabled] = useState(false);
-  const [patientWeight, setPatientWeight] = useState("70");
+  const [patientWeight, setPatientWeight] = useState("60");
   const [patientWeightUnit, setPatientWeightUnit] = useState<"kg" | "lbs">("kg");
   const [history, setHistory] = useState<SensorPoint[]>([]);
   const [rawBLEData, setRawBLEData] = useState("No data received yet");
   const [rawBLEMetrics, setRawBLEMetrics] = useState<RawBLEMetrics>({});
   const [lastMessageTime, setLastMessageTime] = useState("--");
+  const [pressCount, setPressCount] = useState(0);
+  const [lastPressIntervalSeconds, setLastPressIntervalSeconds] = useState<number | null>(null);
+  const [pressTooFastDetail, setPressTooFastDetail] = useState<string | null>(null);
+  const [zeroReadingSeconds, setZeroReadingSeconds] = useState(0);
+  const [zeroReadingStartedAtMs, setZeroReadingStartedAtMs] = useState<number | null>(null);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [patientQuery, setPatientQuery] = useState("");
@@ -1183,6 +1199,10 @@ export default function HomePage() {
   const audioContextRef = useRef<AudioContext | null>(null);
   const lastPatientStatusRef = useRef<string>("");
   const activeLogIdRef = useRef("");
+  const lastPressReleaseTimestampRef = useRef<number | null>(null);
+  const pressActiveRef = useRef(false);
+  const zeroReadingStartedAtRef = useRef<number | null>(null);
+  const zeroReadingActiveRef = useRef(false);
 
   const handleBLEDeviceDisconnected = async () => {
     await stopBLEData();
@@ -1212,6 +1232,15 @@ export default function HomePage() {
     }
 
     notificationHandlerRef.current = null;
+    lastPressReleaseTimestampRef.current = null;
+    pressActiveRef.current = false;
+    zeroReadingStartedAtRef.current = null;
+    zeroReadingActiveRef.current = false;
+    setPressCount(0);
+    setLastPressIntervalSeconds(null);
+    setPressTooFastDetail(null);
+    setZeroReadingSeconds(0);
+    setZeroReadingStartedAtMs(null);
     if (logIdToStop) {
       setLogSessions((prev) =>
         prev.map((entry) =>
@@ -1322,6 +1351,15 @@ export default function HomePage() {
     setRawBLEData("Waiting for data...");
     setRawBLEMetrics({});
     setLastMessageTime("--");
+    lastPressReleaseTimestampRef.current = null;
+    pressActiveRef.current = false;
+    zeroReadingStartedAtRef.current = null;
+    zeroReadingActiveRef.current = false;
+    setPressCount(0);
+    setLastPressIntervalSeconds(null);
+    setPressTooFastDetail(null);
+    setZeroReadingSeconds(0);
+    setZeroReadingStartedAtMs(null);
 
     const handler = (event: Event) => {
       const target = event.target as BluetoothRemoteGATTCharacteristic;
@@ -1383,6 +1421,60 @@ export default function HomePage() {
           tidalVolumeML: nextTidalVolumeML,
           peakTidalVolumeML: nextPeakTidalVolumeML,
         });
+
+        const pressSignalValues = [
+          nextPressure,
+          nextTidalVolumeML,
+          nextPeakTidalVolumeML,
+        ].filter((value): value is number => value !== undefined);
+        const isPressActive =
+          pressSignalValues.length > 0 &&
+          pressSignalValues.some((value) => value > PRESS_SIGNAL_THRESHOLD);
+        const wasPressActive = pressActiveRef.current;
+        const now = Date.now();
+
+        if (isPressActive && !wasPressActive) {
+          const previousReleaseTimestamp = lastPressReleaseTimestampRef.current;
+          const nextIntervalSeconds =
+            previousReleaseTimestamp !== null
+              ? (now - previousReleaseTimestamp) / 1000
+              : null;
+
+          setLastPressIntervalSeconds(nextIntervalSeconds);
+          setPressTooFastDetail(
+            nextIntervalSeconds !== null && nextIntervalSeconds < MIN_SECONDS_BETWEEN_PRESSES
+              ? `Pressed too fast (${nextIntervalSeconds.toFixed(1)}s after release, need ${MIN_SECONDS_BETWEEN_PRESSES}s).`
+              : null
+          );
+        }
+
+        if (!isPressActive && wasPressActive) {
+          lastPressReleaseTimestampRef.current = now;
+          setPressCount((prev) => prev + 1);
+        }
+
+        const hasTidalVolumeReading = nextTidalVolumeML !== undefined;
+        const isZeroTidalVolume = hasTidalVolumeReading && nextTidalVolumeML === 0;
+
+        if (isZeroTidalVolume) {
+          if (!zeroReadingActiveRef.current) {
+            zeroReadingStartedAtRef.current = now;
+            zeroReadingActiveRef.current = true;
+            setZeroReadingSeconds(0);
+            setZeroReadingStartedAtMs(now);
+          } else if (zeroReadingStartedAtRef.current !== null) {
+            setZeroReadingSeconds(
+              Math.max(0, Math.floor((now - zeroReadingStartedAtRef.current) / 1000))
+            );
+          }
+        } else if (hasTidalVolumeReading) {
+          zeroReadingStartedAtRef.current = null;
+          zeroReadingActiveRef.current = false;
+          setZeroReadingSeconds(0);
+          setZeroReadingStartedAtMs(null);
+        }
+
+        pressActiveRef.current = isPressActive;
 
         if (nextPressure !== undefined) setPressure(nextPressure.toFixed(2));
 
@@ -1451,6 +1543,15 @@ export default function HomePage() {
     setRawBLEData("No data received yet");
     setRawBLEMetrics({});
     setLastMessageTime("--");
+    lastPressReleaseTimestampRef.current = null;
+    pressActiveRef.current = false;
+    zeroReadingStartedAtRef.current = null;
+    zeroReadingActiveRef.current = false;
+    setPressCount(0);
+    setLastPressIntervalSeconds(null);
+    setPressTooFastDetail(null);
+    setZeroReadingSeconds(0);
+    setZeroReadingStartedAtMs(null);
   };
 
   const tempValues = history.map((p) => p.tempF);
@@ -1467,7 +1568,10 @@ export default function HomePage() {
         ? `${pressure} ${PRESSURE_UNIT}`
         : "--";
   const displayedTidalVolumeValue =
-    rawBLEMetrics.tidalVolumeML ?? latestHistoryPoint?.tidal_volume;
+    rawBLEMetrics.peakTidalVolumeML ??
+    latestHistoryPoint?.peak_tidal_volume ??
+    rawBLEMetrics.tidalVolumeML ??
+    latestHistoryPoint?.tidal_volume;
   const displayedTidalVolume =
     displayedTidalVolumeValue !== undefined
       ? `${displayedTidalVolumeValue.toFixed(0)} mL`
@@ -1491,8 +1595,8 @@ export default function HomePage() {
   const hasValidPatientWeight = normalizedPatientWeightKg !== null;
   const expectedTidalMinMl = hasValidPatientWeight ? normalizedPatientWeightKg * 6 : null;
   const expectedTidalMaxMl = hasValidPatientWeight ? normalizedPatientWeightKg * 8 : null;
-  const statusTempMin = 86;
-  const statusTempMax = 95;
+  const statusTempMin = 78;
+  const statusTempMax = 85;
   const statusTidalMinML = expectedTidalMinMl ?? 500;
   const statusTidalMaxML = expectedTidalMaxMl ?? 600;
   const patientStatus = getPatientStatus(
@@ -1501,7 +1605,8 @@ export default function HomePage() {
     statusTempMax,
     statusTidalMinML,
     statusTidalMaxML,
-    isStreaming
+    isStreaming,
+    pressTooFastDetail
   );
   const patientStatusVisuals = getPatientStatusVisuals(
     patientStatus.label,
@@ -1524,15 +1629,23 @@ export default function HomePage() {
   }, [activeLogId]);
 
   useEffect(() => {
-    if (!audioAlertsEnabled || !isStreaming) {
-      lastPatientStatusRef.current = patientStatus.label;
+    if (!isStreaming || zeroReadingStartedAtMs === null) {
       return;
     }
 
-    if (
-      patientStatus.label !== "Caution" &&
-      patientStatus.label !== "Alert"
-    ) {
+    const intervalId = window.setInterval(() => {
+      setZeroReadingSeconds(
+        Math.max(0, Math.floor((Date.now() - zeroReadingStartedAtMs) / 1000))
+      );
+    }, 1000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [isStreaming, zeroReadingStartedAtMs]);
+
+  useEffect(() => {
+    if (!audioAlertsEnabled || !isStreaming) {
       lastPatientStatusRef.current = patientStatus.label;
       return;
     }
@@ -1542,10 +1655,21 @@ export default function HomePage() {
     }
 
     const previousPatientStatus = lastPatientStatusRef.current;
+    const isRecoveryTransition =
+      (previousPatientStatus === "Alert" && patientStatus.label === "Caution") ||
+      (previousPatientStatus === "Caution" && patientStatus.label === "Stable");
+
+    if (
+      patientStatus.label !== "Caution" &&
+      patientStatus.label !== "Alert" &&
+      !isRecoveryTransition
+    ) {
+      lastPatientStatusRef.current = patientStatus.label;
+      return;
+    }
+
     const soundLabel =
-      previousPatientStatus === "Alert" && patientStatus.label === "Caution"
-        ? "Recovery"
-        : patientStatus.label;
+      isRecoveryTransition ? "Recovery" : patientStatus.label;
 
     const AudioContextCtor =
       window.AudioContext ||
@@ -1998,6 +2122,25 @@ export default function HomePage() {
                     ? " from 6-8 mL/kg"
                     : " (adult fallback 500-600 mL)"}
                 </div>
+                <div
+                  style={{
+                    marginTop: "0.75rem",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "0.55rem",
+                    padding: "0.55rem 0.75rem",
+                    borderRadius: "14px",
+                    border: patientStatusVisuals.audioBorder,
+                    background: patientStatusVisuals.audioBackground,
+                    color: patientStatusVisuals.audioText,
+                    fontWeight: 700,
+                  }}
+                >
+                  <span style={{ color: patientStatusVisuals.audioMutedText, fontSize: "0.82rem" }}>
+                    Tidal volume at zero
+                  </span>
+                  <span>{zeroReadingSeconds}s</span>
+                </div>
               </div>
               <div
                 style={{
@@ -2082,20 +2225,6 @@ export default function HomePage() {
                 <div style={{ color: patientStatusVisuals.audioMutedText, fontSize: "0.85rem" }}>
                   Plays a tone when status changes
                 </div>
-                <div style={{ color: patientStatusVisuals.audioMetricText }}>
-                  Temperature:{" "}
-                  <strong>
-                    {latestHistoryPoint ? `${latestHistoryPoint.tempF.toFixed(2)} °F` : "--"}
-                  </strong>
-                </div>
-                <div style={{ color: patientStatusVisuals.audioMetricText }}>
-                  Tidal volume:{" "}
-                  <strong>{displayedTidalVolume}</strong>
-                </div>
-                <div style={{ color: patientStatusVisuals.audioMetricText }}>
-                  Peak tidal volume:{" "}
-                  <strong>{displayedPeakTidalVolume}</strong>
-                </div>
               </div>
             </div>
           </div>
@@ -2122,6 +2251,11 @@ export default function HomePage() {
             yTickStep={200}
             lineColor="#2563eb"
             summaryMode="current"
+            summaryValueOverride={
+              displayedTidalVolumeValue !== undefined
+                ? displayedTidalVolumeValue.toFixed(0)
+                : "--"
+            }
           />
         </div>
       );
@@ -2222,9 +2356,6 @@ export default function HomePage() {
                 <div style={{ marginTop: "0.25rem", fontWeight: 800, color: "var(--text-primary)" }}>
                   {displayedTidalVolume}
                 </div>
-                <div style={{ marginTop: "0.25rem", fontWeight: 800, color: "var(--text-primary)" }}>
-                  Peak: {displayedPeakTidalVolume}
-                </div>
                 <div style={{ marginTop: "0.2rem", fontSize: "0.75rem", color: "var(--text-muted)" }}>
                   Device-reported from BLE payload
                 </div>
@@ -2267,6 +2398,17 @@ export default function HomePage() {
             <h3 style={{ marginTop: 0 }}>Testing Details</h3>
             <p style={{ color: "var(--text-muted)" }}>
               Last message received: <strong>{lastMessageTime}</strong>
+            </p>
+            <p style={{ color: "var(--text-muted)" }}>
+              Press count: <strong>{pressCount}</strong>
+            </p>
+            <p style={{ color: "var(--text-muted)" }}>
+              Last release-to-press interval:{" "}
+              <strong>
+                {lastPressIntervalSeconds !== null
+                  ? `${lastPressIntervalSeconds.toFixed(1)}s`
+                  : "Waiting for next press"}
+              </strong>
             </p>
             <p style={{ color: "var(--text-muted)" }}>
               Stored history points: <strong>{history.length}</strong>
@@ -3471,4 +3613,5 @@ export default function HomePage() {
     </main>
   );
 }
+
 

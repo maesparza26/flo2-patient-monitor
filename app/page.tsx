@@ -11,6 +11,7 @@ const PROJECT_BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH || "";
 const TEMP_MIN = 74;
 const TEMP_MAX = 86;
 const MIN_SECONDS_BETWEEN_PRESSES = 4;
+const PRESS_INTERVAL_GRACE_SECONDS = 0.2;
 const PRESS_SIGNAL_THRESHOLD = 0;
 
 const PRESSURE_MIN = -5;
@@ -655,10 +656,7 @@ function playPatientStatusAlert(
   const steps =
     label === "Alert"
       ? [
-          { frequency: 988, start: 0, duration: 0.18 },
-          { frequency: 988, start: 0.26, duration: 0.18 },
-          { frequency: 740, start: 0.52, duration: 0.2 },
-          { frequency: 988, start: 0.8, duration: 0.22 },
+          { frequency: 960, start: 0, duration: 0.68 },
         ]
       : label === "Recovery"
         ? [
@@ -667,9 +665,7 @@ function playPatientStatusAlert(
             { frequency: 783.99, start: 0.4, duration: 0.22 },
           ]
       : [
-          { frequency: 784, start: 0, duration: 0.16 },
-          { frequency: 784, start: 0.24, duration: 0.16 },
-          { frequency: 784, start: 0.52, duration: 0.16 },
+          { frequency: 820, start: 0, duration: 0.52 },
         ];
 
   steps.forEach((step) => {
@@ -679,7 +675,7 @@ function playPatientStatusAlert(
     const endTime = startTime + step.duration;
 
     oscillator.type =
-      label === "Alert" ? "square" : label === "Caution" ? "triangle" : "sine";
+      label === "Alert" || label === "Caution" ? "square" : "sine";
     oscillator.frequency.setValueAtTime(step.frequency, startTime);
 
     gainNode.gain.setValueAtTime(0.0001, startTime);
@@ -1463,7 +1459,8 @@ export default function HomePage() {
 
           setLastPressIntervalSeconds(nextIntervalSeconds);
           setPressTooFastDetail(
-            nextIntervalSeconds !== null && nextIntervalSeconds < MIN_SECONDS_BETWEEN_PRESSES
+            nextIntervalSeconds !== null &&
+              nextIntervalSeconds < MIN_SECONDS_BETWEEN_PRESSES - PRESS_INTERVAL_GRACE_SECONDS
               ? `Pressed too fast (${nextIntervalSeconds.toFixed(1)}s after release, need ${MIN_SECONDS_BETWEEN_PRESSES}s).`
               : null
           );

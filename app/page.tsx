@@ -655,9 +655,10 @@ function playPatientStatusAlert(
   const steps =
     label === "Alert"
       ? [
-          { frequency: 880, start: 0, duration: 0.18 },
-          { frequency: 660, start: 0.24, duration: 0.18 },
-          { frequency: 880, start: 0.48, duration: 0.24 },
+          { frequency: 988, start: 0, duration: 0.18 },
+          { frequency: 988, start: 0.26, duration: 0.18 },
+          { frequency: 740, start: 0.52, duration: 0.2 },
+          { frequency: 988, start: 0.8, duration: 0.22 },
         ]
       : label === "Recovery"
         ? [
@@ -666,8 +667,9 @@ function playPatientStatusAlert(
             { frequency: 783.99, start: 0.4, duration: 0.22 },
           ]
       : [
-          { frequency: 720, start: 0, duration: 0.16 },
-          { frequency: 720, start: 0.26, duration: 0.16 },
+          { frequency: 784, start: 0, duration: 0.16 },
+          { frequency: 784, start: 0.24, duration: 0.16 },
+          { frequency: 784, start: 0.52, duration: 0.16 },
         ];
 
   steps.forEach((step) => {
@@ -676,13 +678,14 @@ function playPatientStatusAlert(
     const startTime = now + step.start;
     const endTime = startTime + step.duration;
 
-    oscillator.type = label === "Alert" ? "square" : "sine";
+    oscillator.type =
+      label === "Alert" ? "square" : label === "Caution" ? "triangle" : "sine";
     oscillator.frequency.setValueAtTime(step.frequency, startTime);
 
     gainNode.gain.setValueAtTime(0.0001, startTime);
     gainNode.gain.exponentialRampToValueAtTime(
-      label === "Recovery" ? 0.09 : 0.12,
-      startTime + 0.02
+      label === "Alert" ? 0.26 : label === "Caution" ? 0.18 : 0.16,
+      startTime + 0.015
     );
     gainNode.gain.exponentialRampToValueAtTime(0.0001, endTime);
 
@@ -691,6 +694,10 @@ function playPatientStatusAlert(
     oscillator.start(startTime);
     oscillator.stop(endTime);
   });
+}
+
+function getPatientStatusAlertRepeatMs(label: "Caution" | "Alert") {
+  return label === "Alert" ? 1350 : 1800;
 }
 
 function cardStyle(padding = "1.2rem"): React.CSSProperties {
@@ -1210,6 +1217,7 @@ export default function HomePage() {
   const notificationHandlerRef = useRef<((event: Event) => void) | null>(null);
   const disconnectHandlerRef = useRef<((event: Event) => void) | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const audioAlertLoopTimeoutRef = useRef<number | null>(null);
   const lastPatientStatusRef = useRef<string>("");
   const activeLogIdRef = useRef("");
   const lastPressReleaseTimestampRef = useRef<number | null>(null);
@@ -1608,8 +1616,8 @@ export default function HomePage() {
   const hasValidPatientWeight = normalizedPatientWeightKg !== null;
   const expectedTidalMinMl = hasValidPatientWeight ? normalizedPatientWeightKg * 6 : null;
   const expectedTidalMaxMl = hasValidPatientWeight ? normalizedPatientWeightKg * 8 : null;
-  const statusTempMin = 75;
-  const statusTempMax = 85;
+  const statusTempMin = 85;
+  const statusTempMax = 95;
   const statusTidalMinML = expectedTidalMinMl ?? 500;
   const statusTidalMaxML = expectedTidalMaxMl ?? 600;
   const patientStatus = getPatientStatus(
@@ -1658,35 +1666,28 @@ export default function HomePage() {
   }, [isStreaming, zeroReadingStartedAtMs]);
 
   useEffect(() => {
+    if (audioAlertLoopTimeoutRef.current !== null) {
+      window.clearTimeout(audioAlertLoopTimeoutRef.current);
+      audioAlertLoopTimeoutRef.current = null;
+    }
+
     if (!audioAlertsEnabled || !isStreaming) {
       lastPatientStatusRef.current = patientStatus.label;
       return;
     }
 
-    if (lastPatientStatusRef.current === patientStatus.label) {
-      return;
-    }
-
     const previousPatientStatus = lastPatientStatusRef.current;
+    const statusChanged = previousPatientStatus !== patientStatus.label;
     const isRecoveryTransition =
       (previousPatientStatus === "Alert" && patientStatus.label === "Caution") ||
       (previousPatientStatus === "Caution" && patientStatus.label === "Stable");
+    const shouldLoopAlert =
+      patientStatus.label === "Caution" || patientStatus.label === "Alert";
 
-    if (
-      patientStatus.label !== "Caution" &&
-      patientStatus.label !== "Alert" &&
-      !isRecoveryTransition
-    ) {
+    if (!shouldLoopAlert && !(isRecoveryTransition && statusChanged)) {
       lastPatientStatusRef.current = patientStatus.label;
       return;
     }
-
-    const soundLabel: "Caution" | "Alert" | "Recovery" =
-      isRecoveryTransition
-        ? "Recovery"
-        : patientStatus.label === "Alert"
-          ? "Alert"
-          : "Caution";
 
     const AudioContextCtor =
       window.AudioContext ||
@@ -1703,13 +1704,39 @@ export default function HomePage() {
       audioContextRef.current ?? new AudioContextCtor();
     audioContextRef.current = audioContext;
 
-    void audioContext.resume().then(() => {
-      playPatientStatusAlert(audioContext, soundLabel);
-    }).catch(() => {
-      // Ignore browser autoplay or device audio errors.
-    });
+    const playSound = (soundLabel: "Caution" | "Alert" | "Recovery") => {
+      void audioContext.resume().then(() => {
+        playPatientStatusAlert(audioContext, soundLabel);
+      }).catch(() => {
+        // Ignore browser autoplay or device audio errors.
+      });
+    };
+
+    if (shouldLoopAlert) {
+      const loopLabel: "Caution" | "Alert" =
+        patientStatus.label === "Alert" ? "Alert" : "Caution";
+
+      const loopAlert = () => {
+        playSound(loopLabel);
+        audioAlertLoopTimeoutRef.current = window.setTimeout(
+          loopAlert,
+          getPatientStatusAlertRepeatMs(loopLabel)
+        );
+      };
+
+      loopAlert();
+    } else if (statusChanged && isRecoveryTransition) {
+      playSound("Recovery");
+    }
 
     lastPatientStatusRef.current = patientStatus.label;
+
+    return () => {
+      if (audioAlertLoopTimeoutRef.current !== null) {
+        window.clearTimeout(audioAlertLoopTimeoutRef.current);
+        audioAlertLoopTimeoutRef.current = null;
+      }
+    };
   }, [audioAlertsEnabled, isStreaming, patientStatus.label]);
 
   useEffect(() => {
@@ -1719,6 +1746,10 @@ export default function HomePage() {
           "gattserverdisconnected",
           disconnectHandlerRef.current as EventListener
         );
+      }
+      if (audioAlertLoopTimeoutRef.current !== null) {
+        window.clearTimeout(audioAlertLoopTimeoutRef.current);
+        audioAlertLoopTimeoutRef.current = null;
       }
       void audioContextRef.current?.close();
       audioContextRef.current = null;
@@ -2223,7 +2254,7 @@ export default function HomePage() {
                   </span>
                 </button>
                 <div style={{ color: patientStatusVisuals.audioMutedText, fontSize: "0.85rem" }}>
-                  Plays a tone when status changes
+                  Repeats while readings stay in the alert range
                 </div>
               </div>
             </div>

@@ -8,8 +8,8 @@ const SENSOR_CHAR_UUID = "8d9b0b2d-1c57-4b8c-9a72-4d6c5d8e9011";
 const MAX_POINTS = 100;
 const PROJECT_BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH || "";
 
-const TEMP_MIN = 74;
-const TEMP_MAX = 86;
+const TEMP_MIN = 75;
+const TEMP_MAX = 85;
 const MIN_SECONDS_BETWEEN_PRESSES = 4;
 const PRESS_INTERVAL_GRACE_SECONDS = 0.2;
 const PRESS_SIGNAL_THRESHOLD = 0;
@@ -1613,8 +1613,8 @@ export default function HomePage() {
   const hasValidPatientWeight = normalizedPatientWeightKg !== null;
   const expectedTidalMinMl = hasValidPatientWeight ? normalizedPatientWeightKg * 6 : null;
   const expectedTidalMaxMl = hasValidPatientWeight ? normalizedPatientWeightKg * 8 : null;
-  const statusTempMin = 85;
-  const statusTempMax = 95;
+  const statusTempMin = 75;
+  const statusTempMax = 85;
   const statusTidalMinML = expectedTidalMinMl ?? 500;
   const statusTidalMaxML = expectedTidalMaxMl ?? 600;
   const patientStatus = getPatientStatus(

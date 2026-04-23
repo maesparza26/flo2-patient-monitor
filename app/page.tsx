@@ -693,7 +693,7 @@ function playPatientStatusAlert(
 }
 
 function getPatientStatusAlertRepeatMs(label: "Caution" | "Alert") {
-  return label === "Alert" ? 1350 : 1800;
+  return label === "Alert" ? 1100 : 1500;
 }
 
 function cardStyle(padding = "1.2rem"): React.CSSProperties {
